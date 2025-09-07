@@ -11,26 +11,25 @@ st.title("💰 Personal Finance Tracker")
 # ------------------------------
 # Sidebar Navigation
 # ------------------------------
-menu = ["Dashboard", "Add Transaction", "Accounts", "Fixed Expenses", "Goals", "Net Balance"]
+menu = ["Dashboard", "Add Transaction", "Accounts", "Goals", "Net Balance"]
 choice = st.sidebar.selectbox("Menu", menu)
 
 # ------------------------------
 # Sample DataFrames (In-Memory)
 # ------------------------------
 if 'transactions' not in st.session_state:
-    st.session_state['transactions'] = pd.DataFrame(columns=['Date', 'Category', 'Amount', 'Type'])
+    st.session_state['transactions'] = pd.DataFrame(columns=['Date', 'Category', 'Amount', 'Account', 'Note', 'Type'])
 if 'accounts' not in st.session_state:
     st.session_state['accounts'] = pd.DataFrame(columns=['Bank', 'Balance'])
-if 'fixed_expenses' not in st.session_state:
-    st.session_state['fixed_expenses'] = pd.DataFrame(columns=['Expense', 'Amount'])
 if 'goals' not in st.session_state:
     st.session_state['goals'] = pd.DataFrame(columns=['Goal', 'Target Amount', 'Current Amount'])
 
-# Shortcuts
 transactions_df = st.session_state['transactions']
 accounts_df = st.session_state['accounts']
-fixed_expenses_df = st.session_state['fixed_expenses']
 goals_df = st.session_state['goals']
+
+# Predefined expense categories
+expense_categories = ["Food", "Transport", "Entertainment", "Utilities", "Shopping", "Education", "Other"]
 
 # ------------------------------
 # Dashboard Page
@@ -45,18 +44,27 @@ if choice == "Dashboard":
     else:
         st.info("Add your bank accounts in the 'Accounts' section.")
 
-    st.subheader("Fixed Expenses")
-    if not fixed_expenses_df.empty:
-        st.dataframe(fixed_expenses_df)
-        st.write("**Total Fixed Expenses:** RM", fixed_expenses_df['Amount'].sum())
-    else:
-        st.info("Add your monthly fixed expenses in the 'Fixed Expenses' section.")
-
     st.subheader("Goals")
     if not goals_df.empty:
         st.dataframe(goals_df)
     else:
         st.info("Add your financial goals in the 'Goals' section.")
+
+    st.subheader("Expenses by Category")
+    expense_df = transactions_df[transactions_df['Type'] == "Expense"]
+    if not expense_df.empty:
+        category_summary = expense_df.groupby('Category')['Amount'].sum().reset_index()
+        fig_expense = px.pie(category_summary, names='Category', values='Amount', title="Expenses by Category")
+        st.plotly_chart(fig_expense, use_container_width=True)
+
+        # Monthly spending per category
+        expense_df['Month'] = expense_df['Date'].dt.to_period('M').astype(str)
+        monthly_summary = expense_df.groupby(['Month', 'Category'])['Amount'].sum().reset_index()
+        fig_monthly = px.bar(monthly_summary, x='Month', y='Amount', color='Category', barmode='group',
+                             title="Monthly Spending by Category")
+        st.plotly_chart(fig_monthly, use_container_width=True)
+    else:
+        st.info("Add some expenses to see category distribution and monthly trend.")
 
 # ------------------------------
 # Add Transaction Page
@@ -65,18 +73,42 @@ elif choice == "Add Transaction":
     st.header("➕ Add Transaction")
     t_date = st.date_input("Date", date.today())
     t_type = st.selectbox("Type", ["Income", "Expense"])
-    t_category = st.text_input("Category / Description")
+
+    # Select account for the transaction
+    account_options = accounts_df['Bank'].tolist() if not accounts_df.empty else []
+    selected_account = st.selectbox("Select Account", ["--Select--"] + account_options)
+
+    # Expense category
+    if t_type == "Expense":
+        t_category = st.selectbox("Category", expense_categories)
+        note = st.text_input("Note (if 'Other', describe the expense)")
+    else:
+        t_category = st.text_input("Category / Description")
+        note = ""
+
     t_amount = st.number_input("Amount (RM)", min_value=0.0, step=0.1)
 
     if st.button("Add Transaction"):
-        new_transaction = pd.DataFrame({
-            'Date': [t_date],
-            'Category': [t_category],
-            'Amount': [t_amount],
-            'Type': [t_type]
-        })
-        st.session_state['transactions'] = pd.concat([transactions_df, new_transaction], ignore_index=True)
-        st.success("Transaction added successfully!")
+        if t_type == "Expense" and selected_account == "--Select--":
+            st.warning("Please select an account for the expense.")
+        else:
+            new_transaction = pd.DataFrame({
+                'Date': [t_date],
+                'Category': [t_category],
+                'Amount': [t_amount],
+                'Account': [selected_account if t_type=="Expense" else ""],
+                'Note': [note],
+                'Type': [t_type]
+            })
+            st.session_state['transactions'] = pd.concat([transactions_df, new_transaction], ignore_index=True)
+
+            # Deduct from account if expense
+            if t_type == "Expense" and selected_account in accounts_df['Bank'].values:
+                idx = accounts_df.index[accounts_df['Bank'] == selected_account][0]
+                accounts_df.at[idx, 'Balance'] -= t_amount
+                st.session_state['accounts'] = accounts_df
+
+            st.success("Transaction added successfully!")
 
     if not transactions_df.empty:
         st.subheader("All Transactions")
@@ -88,7 +120,7 @@ elif choice == "Add Transaction":
 elif choice == "Accounts":
     st.header("🏦 Bank Accounts / Savings")
     bank = st.text_input("Bank Name")
-    balance = st.number_input("Balance (RM)", min_value=0.0, step=0.1)
+    balance = st.number_input("Initial Balance (RM)", min_value=0.0, step=0.1)
 
     if st.button("Add Account"):
         new_acc = pd.DataFrame({'Bank': [bank], 'Balance': [balance]})
@@ -99,22 +131,19 @@ elif choice == "Accounts":
         st.subheader("All Accounts")
         st.dataframe(accounts_df)
 
-# ------------------------------
-# Fixed Expenses Page
-# ------------------------------
-elif choice == "Fixed Expenses":
-    st.header("📌 Fixed Monthly Expenses")
-    expense = st.text_input("Expense Name")
-    amount = st.number_input("Amount (RM)", min_value=0.0, step=0.1)
+        st.subheader("Top-Up Accounts (Manual after Salary)")
+        top_up_amounts = {}
+        for i, row in accounts_df.iterrows():
+            amt = st.number_input(f"Top-Up for {row['Bank']}", min_value=0.0, step=0.1, key=f"topup_{i}")
+            top_up_amounts[row['Bank']] = amt
 
-    if st.button("Add Fixed Expense"):
-        new_fixed = pd.DataFrame({'Expense': [expense], 'Amount': [amount]})
-        st.session_state['fixed_expenses'] = pd.concat([fixed_expenses_df, new_fixed], ignore_index=True)
-        st.success("Fixed expense added!")
-
-    if not fixed_expenses_df.empty:
-        st.subheader("All Fixed Expenses")
-        st.dataframe(fixed_expenses_df)
+        if st.button("Update Balances"):
+            for bank_name, amt in top_up_amounts.items():
+                if amt > 0:
+                    idx = accounts_df.index[accounts_df['Bank'] == bank_name][0]
+                    accounts_df.at[idx, 'Balance'] += amt
+            st.session_state['accounts'] = accounts_df
+            st.success("Account balances updated!")
 
 # ------------------------------
 # Goals Page
@@ -147,21 +176,18 @@ elif choice == "Net Balance":
     if transactions_df.empty:
         st.info("Add some transactions first!")
     else:
-        # Prepare transactions
-        variable_expenses_df = transactions_df[transactions_df['Type'] == "Expense"].copy()
-        variable_expenses_df['Date'] = pd.to_datetime(variable_expenses_df['Date'])
-        variable_expenses_df = variable_expenses_df.sort_values('Date')
-        variable_expenses_df['Cumulative'] = variable_expenses_df['Amount'].cumsum()
+        transactions_df['Date'] = pd.to_datetime(transactions_df['Date'])
+        transactions_df_sorted = transactions_df.sort_values('Date')
+        transactions_df_sorted['Cumulative'] = transactions_df_sorted.apply(
+            lambda row: row['Amount'] if row['Type'] == "Income" else -row['Amount'], axis=1
+        ).cumsum()
 
         # Total accounts
         total_balance = accounts_df['Balance'].sum() if not accounts_df.empty else 0.0
 
-        # Total fixed expenses
-        fixed_total = fixed_expenses_df['Amount'].sum() if not fixed_expenses_df.empty else 0.0
-
         # Net balance calculation
-        net_balance_df = variable_expenses_df[['Date', 'Cumulative']].copy()
-        net_balance_df['Net Balance'] = total_balance - fixed_total - net_balance_df['Cumulative']
+        net_balance_df = transactions_df_sorted[['Date', 'Cumulative']].copy()
+        net_balance_df['Net Balance'] = total_balance + net_balance_df['Cumulative']
 
         st.dataframe(net_balance_df)
 
